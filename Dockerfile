@@ -11,4 +11,4 @@ RUN python -m venv venv && . /app/venv/bin/activate && pip install -r requiremen
 
 # Exponiere den Port und starte die App mit Gunicorn
 EXPOSE 8080
-CMD ["venv/bin/gunicorn", "-b", "0.0.0.0:8080", "app:app"]
+CMD ["/app/venv/bin/gunicorn", "-b", "0.0.0.0:8080", "app:app"]
