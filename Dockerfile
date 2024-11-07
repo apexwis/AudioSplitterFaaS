@@ -9,7 +9,7 @@ WORKDIR /app
 COPY . /app
 
 # Installiere alle Abhängigkeiten global
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Exponiere den Port und starte die App mit Gunicorn
 EXPOSE 8080
