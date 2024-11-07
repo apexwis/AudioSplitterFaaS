@@ -1,0 +1,8 @@
+[phases.setup]
+nix_pkgs = ["ffmpeg", "python310", "gcc"]
+
+[phases.build]
+cmds = ["pip install -r requirements.txt"]
+
+[phases.start]
+cmd = "gunicorn app:app"
