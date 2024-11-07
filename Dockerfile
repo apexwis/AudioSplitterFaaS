@@ -1,14 +1,15 @@
 # Verwende ein Basis-Python-Image
 FROM python:3.10-slim
 
-# Installiere ffmpeg, gunicorn und andere benötigte Pakete
+# Installiere ffmpeg und andere benötigte Pakete
 RUN apt-get update && apt-get install -y ffmpeg gcc && rm -rf /var/lib/apt/lists/*
-RUN pip install gunicorn
 
-# Erstelle und aktiviere ein virtuelles Environment
+# Arbeitsverzeichnis festlegen
 WORKDIR /app
 COPY . /app
-RUN python -m venv venv && . /app/venv/bin/activate && pip install -r requirements.txt
+
+# Installiere alle Abhängigkeiten global
+RUN pip install -r requirements.txt
 
 # Exponiere den Port und starte die App mit Gunicorn
 EXPOSE 8080
