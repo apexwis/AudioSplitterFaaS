@@ -1,90 +1,129 @@
 import os
+import time
+from io import BytesIO
 from flask import Flask, request, jsonify
 from pydub import AudioSegment
-from io import BytesIO
 import boto3
 from botocore.exceptions import NoCredentialsError
 
 app = Flask(__name__)
 
-# AWS-Zugangsdaten und API-Key aus den Umgebungsvariablen lesen
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
 AWS_ACCESS_KEY = os.environ.get('AWS_ACCESS_KEY')
 AWS_SECRET_KEY = os.environ.get('AWS_SECRET_KEY')
 AWS_BUCKET_NAME = os.environ.get('AWS_BUCKET_NAME')
-API_KEY = os.environ.get('API_KEY')
+API_KEY        = os.environ.get('API_KEY')
 
-# Überprüfe, ob die Zugangsdaten vorhanden sind
-if not AWS_ACCESS_KEY or not AWS_SECRET_KEY or not AWS_BUCKET_NAME or not API_KEY:
+if not all([AWS_ACCESS_KEY, AWS_SECRET_KEY, AWS_BUCKET_NAME, API_KEY]):
     raise Exception("Fehlende Umgebungsvariablen für AWS oder API-Key")
 
-# Initialisiere den S3-Client
+# Initialise S3 client
 s3 = boto3.client(
-    's3',
+    "s3",
     aws_access_key_id=AWS_ACCESS_KEY,
-    aws_secret_access_key=AWS_SECRET_KEY
+    aws_secret_access_key=AWS_SECRET_KEY,
 )
 
-def authenticate_request(request):
-    """Prüft, ob der API-Key in der Anfrage korrekt ist."""
-    client_api_key = request.headers.get('API-Key')
-    return client_api_key == API_KEY
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-@app.route('/', methods=['GET'])
+def authenticate_request(req) -> bool:
+    """Validate API-Key header."""
+    return req.headers.get("API-Key") == API_KEY
+
+
+def presigned_get_url(key: str, expires: int = 900) -> str:
+    """Generate a time-limited download URL for an object."""
+    return s3.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": AWS_BUCKET_NAME, "Key": key},
+        ExpiresIn=expires,
+    )
+
+
+def unique_filename(base: str, index: int) -> str:
+    """Generate a collision-safe S3 object name."""
+    ts = int(time.time() * 1e3)
+    return f"{base}_{index}_{ts}.wav"
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+@app.route("/", methods=["GET"])
 def index():
-    return 'Die Anwendung läuft!', 200
+    return "Die Anwendung läuft!", 200
 
-@app.route('/split-audio', methods=['POST'])
+
+@app.route("/split-audio", methods=["POST"])
 def split_audio():
+    # ── Auth ────────────────────────────────────────────────────────────────
     if not authenticate_request(request):
         return jsonify({"error": "Unauthorized access"}), 401
 
-    if 'file' not in request.files:
+    # ── File presence checks ────────────────────────────────────────────────
+    if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
-    file = request.files['file']
-    if file.filename == '':
+    file = request.files["file"]
+    if file.filename == "":
         return jsonify({"error": "No file selected"}), 400
 
-    audio = AudioSegment.from_file(file)
-    duration = len(audio)
-    segment_length = duration // 4
-
-    file_urls = []
+    # ── Split audio into four equal parts ───────────────────────────────────
+    audio           = AudioSegment.from_file(file)
+    duration_ms     = len(audio)
+    segment_length  = duration_ms // 4
+    presigned_urls  = []
 
     for i in range(4):
-        start_time = i * segment_length
-        end_time = (i + 1) * segment_length if i < 3 else duration
-        segment = audio[start_time:end_time]
+        start = i * segment_length
+        end   = duration_ms if i == 3 else (i + 1) * segment_length
+        segment = audio[start:end]
 
-        segment_io = BytesIO()
-        segment.export(segment_io, format="wav")
-        segment_io.seek(0)
+        # Export segment to an in-memory buffer
+        buffer = BytesIO()
+        segment.export(buffer, format="wav")
+        buffer.seek(0)
 
-        file_name = f'segment_{i + 1}.wav'
+        object_key = unique_filename("segment", i + 1)
 
         try:
+            # Upload without ACLs; bucket remains private
             s3.upload_fileobj(
-                segment_io,
+                buffer,
                 AWS_BUCKET_NAME,
-                file_name,
-                ExtraArgs={
-                    'ContentType': 'audio/wav'
-                }
+                object_key,
+                ExtraArgs={"ContentType": "audio/wav"},
             )
 
-            file_url = f'https://{AWS_BUCKET_NAME}.s3.amazonaws.com/{file_name}'
-            file_urls.append(file_url)
+            # Generate a 15-minute presigned URL
+            url = presigned_get_url(object_key, expires=900)
+            presigned_urls.append(url)
 
         except NoCredentialsError:
-            return jsonify({'error': 'AWS credentials not available'}), 500
+            return jsonify({"error": "AWS credentials not available"}), 500
 
-    return jsonify({
-        "file_url_1": file_urls[0],
-        "file_url_2": file_urls[1],
-        "file_url_3": file_urls[2],
-        "file_url_4": file_urls[3]
-    }), 200
+    # ── Response ───────────────────────────────────────────────────────────
+    return jsonify(
+        {
+            "file_url_1": presigned_urls[0],
+            "file_url_2": presigned_urls[1],
+            "file_url_3": presigned_urls[2],
+            "file_url_4": presigned_urls[3],
+            "expires_in": 900,  # seconds
+        }
+    ), 200
+
+
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host="0.0.0.0", port=port, debug=True)
