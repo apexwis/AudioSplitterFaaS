@@ -11,17 +11,16 @@ from botocore.exceptions import NoCredentialsError
 app = Flask(__name__)
 
 # ────────────────────────────  CONFIG  ──────────────────────────────────
-
 AWS_ACCESS_KEY = os.environ.get("AWS_ACCESS_KEY")
 AWS_SECRET_KEY = os.environ.get("AWS_SECRET_KEY")
 AWS_BUCKET_NAME = os.environ.get("AWS_BUCKET_NAME")
-AWS_REGION     = os.environ.get("AWS_REGION")  # set this var!
+AWS_REGION     = os.environ.get("AWS_REGION")        # e.g. "eu-central-1"
 API_KEY        = os.environ.get("API_KEY")
 
 if not all([AWS_ACCESS_KEY, AWS_SECRET_KEY, AWS_BUCKET_NAME, API_KEY]):
     raise Exception("Fehlende Umgebungsvariablen für AWS oder API-Key")
 
-# S3 client: force SigV4
+# Force SigV4 signing
 s3 = boto3.client(
     "s3",
     region_name=AWS_REGION,
@@ -31,13 +30,12 @@ s3 = boto3.client(
 )
 
 # ────────────────────────────  HELPERS  ─────────────────────────────────
-
 def authenticate_request(req) -> bool:
     return req.headers.get("API-Key") == API_KEY
 
 
 def presigned_get_url(key: str, expires: int = 900) -> str:
-    """Return a time-limited download URL (SigV4)."""
+    """Return a time-limited (SigV4) download URL for an S3 object."""
     return s3.generate_presigned_url(
         "get_object",
         Params={"Bucket": AWS_BUCKET_NAME, "Key": key},
@@ -46,11 +44,11 @@ def presigned_get_url(key: str, expires: int = 900) -> str:
 
 
 def unique_filename(base: str, index: int) -> str:
+    """Generate a collision-safe S3 key."""
     ts = int(time.time() * 1e3)
     return f"{base}_{index}_{ts}.wav"
 
 # ────────────────────────────  ROUTES  ──────────────────────────────────
-
 @app.route("/", methods=["GET"])
 def index():
     return "Die Anwendung läuft!", 200
@@ -74,7 +72,7 @@ def split_audio():
     audio           = AudioSegment.from_file(file)
     duration_ms     = len(audio)
     seg_len         = duration_ms // 4
-    presigned_urls  = []
+    segments        = []                       # ← our new list of dicts
 
     for i in range(4):
         start = i * seg_len
@@ -94,18 +92,20 @@ def split_audio():
                 key,
                 ExtraArgs={"ContentType": "audio/wav"},
             )
-            presigned_urls.append(presigned_get_url(key, expires=900))
+
+            segments.append({
+                "url": presigned_get_url(key, expires=900),
+                "key": key
+            })
 
         except NoCredentialsError:
             return jsonify({"error": "AWS credentials not available"}), 500
 
+    # ── response ────────────────────────────────────────────────────────
     return jsonify(
         {
-            "file_url_1": presigned_urls[0],
-            "file_url_2": presigned_urls[1],
-            "file_url_3": presigned_urls[2],
-            "file_url_4": presigned_urls[3],
-            "expires_in": 900,
+            "segments": segments,   # [{url, key}, …]
+            "expires_in": 900       # seconds
         }
     ), 200
 
