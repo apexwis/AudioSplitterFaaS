@@ -15,7 +15,7 @@ app = Flask(__name__)
 AWS_ACCESS_KEY = os.environ.get("AWS_ACCESS_KEY")
 AWS_SECRET_KEY = os.environ.get("AWS_SECRET_KEY")
 AWS_BUCKET_NAME = os.environ.get("AWS_BUCKET_NAME")
-AWS_REGION     = os.environ.get("AWS_REGION", "us-east-1")  # set this var!
+AWS_REGION     = os.environ.get("AWS_REGION")  # set this var!
 API_KEY        = os.environ.get("API_KEY")
 
 if not all([AWS_ACCESS_KEY, AWS_SECRET_KEY, AWS_BUCKET_NAME, API_KEY]):
