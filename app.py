@@ -68,7 +68,6 @@ def split_audio():
                 AWS_BUCKET_NAME,
                 file_name,
                 ExtraArgs={
-                    'ACL': 'public-read',
                     'ContentType': 'audio/wav'
                 }
             )
