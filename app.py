@@ -1,5 +1,7 @@
 import os
 import time
+import subprocess
+import tempfile
 from io import BytesIO
 
 from flask import Flask, request, jsonify
@@ -43,10 +45,10 @@ def presigned_get_url(key: str, expires: int = 900) -> str:
     )
 
 
-def unique_filename(base: str, index: int) -> str:
-    """Generate a collision-safe S3 key."""
+def unique_filename(base: str, index: int, ext: str = "mp3") -> str:
+    """Generate a collision-safe S3 key with the requested extension."""
     ts = int(time.time() * 1e3)
-    return f"{base}_{index}_{ts}.wav"
+    return f"{base}_{index}_{ts}.{ext}"
 
 # ────────────────────────────  ROUTES  ──────────────────────────────────
 @app.route("/", methods=["GET"])
@@ -64,42 +66,73 @@ def split_audio():
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
-    file = request.files["file"]
-    if file.filename == "":
+    upload = request.files["file"]
+    if upload.filename == "":
         return jsonify({"error": "No file selected"}), 400
 
-    # ── split audio ─────────────────────────────────────────────────────
-    audio           = AudioSegment.from_file(file)
-    duration_ms     = len(audio)
-    seg_len         = duration_ms // 4
-    segments        = []                       # ← our new list of dicts
+    # ── persist original upload to temp file for ffmpeg ────────────────
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_in:
+        upload.save(tmp_in)
+        input_path = tmp_in.name
 
+    # ── determine duration (ms) for equal chunks ───────────────────────
+    audio        = AudioSegment.from_file(input_path)
+    duration_ms  = len(audio)
+    seg_len_ms   = duration_ms // 4
+    segments     = []
+
+    # ── split via ffmpeg -c:a copy (no re-encode) ───────────────────────
     for i in range(4):
-        start = i * seg_len
-        end   = duration_ms if i == 3 else (i + 1) * seg_len
-        segment = audio[start:end]
+        start_ms      = i * seg_len_ms
+        end_ms        = duration_ms if i == 3 else (i + 1) * seg_len_ms
+        start_sec     = start_ms / 1000
+        duration_sec  = (end_ms - start_ms) / 1000
 
-        buf = BytesIO()
-        segment.export(buf, format="wav")
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-hide_banner", "-loglevel", "error",
+            "-ss", str(start_sec),
+            "-t", str(duration_sec),
+            "-i", input_path,
+            "-c:a", "copy",               # ★ lossless slice
+            "-f", "mp3",
+            "pipe:1"
+        ]
+
+        try:
+            proc = subprocess.run(
+                ffmpeg_cmd,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+        except subprocess.CalledProcessError as e:
+            return jsonify({"error": "ffmpeg failed", "details": e.stderr.decode()}), 500
+
+        buf = BytesIO(proc.stdout)
         buf.seek(0)
 
-        key = unique_filename("segment", i + 1)
+        key = unique_filename("segment", i + 1, ext="mp3")
 
         try:
             s3.upload_fileobj(
                 buf,
                 AWS_BUCKET_NAME,
                 key,
-                ExtraArgs={"ContentType": "audio/wav"},
+                ExtraArgs={"ContentType": "audio/mpeg"},
             )
-
             segments.append({
                 "url": presigned_get_url(key, expires=900),
                 "key": key
             })
-
         except NoCredentialsError:
             return jsonify({"error": "AWS credentials not available"}), 500
+
+    # ── clean-up temp file ──────────────────────────────────────────────
+    try:
+        os.remove(input_path)
+    except OSError:
+        pass
 
     # ── response ────────────────────────────────────────────────────────
     return jsonify(
