@@ -81,7 +81,7 @@ def split_audio():
     seg_len_ms   = duration_ms // 4
     segments     = []
 
-    # ── split via ffmpeg -c:a copy (no re-encode) ───────────────────────
+    # ── split via ffmpeg -map 0:a:0 -c:a copy (no re-encode) ───────────
     for i in range(4):
         start_ms      = i * seg_len_ms
         end_ms        = duration_ms if i == 3 else (i + 1) * seg_len_ms
@@ -92,9 +92,10 @@ def split_audio():
             "ffmpeg",
             "-hide_banner", "-loglevel", "error",
             "-ss", str(start_sec),
-            "-t", str(duration_sec),
-            "-i", input_path,
-            "-c:a", "copy",               # ★ lossless slice
+            "-t",  str(duration_sec),
+            "-i",  input_path,
+            "-map", "0:a:0",             # ★ copy **only** first audio stream
+            "-c:a", "copy",
             "-f", "mp3",
             "pipe:1"
         ]
