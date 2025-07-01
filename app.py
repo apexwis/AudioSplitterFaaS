@@ -19,6 +19,9 @@ AWS_BUCKET_NAME = os.environ.get("AWS_BUCKET_NAME")
 AWS_REGION     = os.environ.get("AWS_REGION")        # e.g. "eu-central-1"
 API_KEY        = os.environ.get("API_KEY")
 
+# target bitrate for slices (feel free to raise/lower)
+TARGET_BITRATE = os.environ.get("MP3_BITRATE", "64k")   # e.g. "96k" "48k"
+
 if not all([AWS_ACCESS_KEY, AWS_SECRET_KEY, AWS_BUCKET_NAME, API_KEY]):
     raise Exception("Fehlende Umgebungsvariablen für AWS oder API-Key")
 
@@ -71,7 +74,7 @@ def split_audio():
         return jsonify({"error": "No file selected"}), 400
 
     # ── persist original upload to temp file for ffmpeg ────────────────
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_in:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".orig") as tmp_in:
         upload.save(tmp_in)
         input_path = tmp_in.name
 
@@ -81,7 +84,7 @@ def split_audio():
     seg_len_ms   = duration_ms // 4
     segments     = []
 
-    # ── split via ffmpeg -map 0:a:0 -c:a copy (no re-encode) ───────────
+    # ── split & re-encode via ffmpeg (libmp3lame @ TARGET_BITRATE) ─────
     for i in range(4):
         start_ms      = i * seg_len_ms
         end_ms        = duration_ms if i == 3 else (i + 1) * seg_len_ms
@@ -94,9 +97,12 @@ def split_audio():
             "-ss", str(start_sec),
             "-t",  str(duration_sec),
             "-i",  input_path,
-            "-map", "0:a:0",             # ★ copy **only** first audio stream
-            "-c:a", "copy",
-            "-f", "mp3",
+            "-vn",                    # strip any cover art / video streams
+            "-ac", "1",               # mono keeps size down, STT-friendly
+            "-ar", "16000",           # 16 kHz also fine for speech models
+            "-c:a", "libmp3lame",
+            "-b:a", TARGET_BITRATE,
+            "-f",   "mp3",
             "pipe:1"
         ]
 
@@ -108,7 +114,8 @@ def split_audio():
                 stderr=subprocess.PIPE
             )
         except subprocess.CalledProcessError as e:
-            return jsonify({"error": "ffmpeg failed", "details": e.stderr.decode()}), 500
+            return jsonify({"error": "ffmpeg failed",
+                            "details": e.stderr.decode()}), 500
 
         buf = BytesIO(proc.stdout)
         buf.seek(0)
